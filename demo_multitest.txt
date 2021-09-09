@@ -1,0 +1,171 @@
+properties([pipelineTriggers([githubPush()])])
+
+pipeline {
+    agent {
+        label 'target'
+    }
+
+    environment {
+        DLPX_ENGINE = "10.160.0.10"
+        DLPX_CRED = credentials('pipelineeng')
+        DLPX_TEMPLATE = "App1_template"
+        DLPX_CONTAINER = "pipedb"
+    }
+
+    stages {
+        stage('Checkout SCM') {
+          steps {
+            checkout([
+              $class: 'GitSCM',
+              branches: [[name: 'main']],
+              userRemoteConfigs: [[
+                url: 'https://github.com/piorotest/pipelinedemo.git/',
+                credentialsId: '',
+              ]]
+             ])
+           }
+        }
+
+
+        stage('Configure db pipeline interface') {
+            agent {
+                docker {
+                        image 'pioro/dxtoolkit:2.4.10'
+                        args '-u root -w /dxtoolkit -v ${PWD}:/config'
+                        reuseNode true
+                }
+            }
+            steps {
+                sh '/dxtoolkit/dx_config -convert todxconf -text hostname,$DLPX_ENGINE,80,$DLPX_CRED_USR,$DLPX_CRED_PSW,true,http -configfile /config/dxtools.conf'
+                sh '/dxtoolkit/dx_get_appliance -configfile /config/dxtools.conf'
+            }
+        }
+        
+        stage('Configure pipedb with proper data') {
+            parallel {
+                stage('freshcopy - Refresh from production') {
+                    when { expression { params.Choose_data == "freshcopy" } }            
+                    agent {
+                        docker {
+                                image 'pioro/dxtoolkit:2.4.10'
+                                args '-u root -w /dxtoolkit -v ${PWD}:/config'
+                                reuseNode true
+                        }
+                    }
+                    steps {
+                        sh "/dxtoolkit/dx_ctl_js_container -action refresh  -container_name $DLPX_CONTAINER -template_name $DLPX_TEMPLATE"
+                    }
+                }
+                stage('1pct - Use 1 pct of data') {
+                    when { expression { params.Choose_data == "1pct" } }            
+                    agent {
+                        docker {
+                                image 'pioro/dxtoolkit:2.4.10'
+                                args '-u root -w /dxtoolkit -v ${PWD}:/config'
+                                reuseNode true
+                        }
+                    }
+                    steps {
+                        sh "/dxtoolkit/dx_ctl_js_container -action restore -timestamp 1pctdata  -container_name $DLPX_CONTAINER -template_name $DLPX_TEMPLATE"
+                    }
+                }
+                stage('10pct - Use 10 pct of data') {
+                    when { expression { params.Choose_data == "10pct" } }            
+                    agent {
+                        docker {
+                                image 'pioro/dxtoolkit:2.4.10'
+                                args '-u root -w /dxtoolkit -v ${PWD}:/config'
+                                reuseNode true
+                        }
+                    }
+                    steps {
+                        sh "/dxtoolkit/dx_ctl_js_container -action restore -timestamp 10pctdata  -container_name $DLPX_CONTAINER -template_name $DLPX_TEMPLATE"
+                    }
+                }
+                stage('syntetic - Use syntetic data') {
+                    when { expression { params.Choose_data == "syntetic" } }            
+                    agent {
+                        docker {
+                                image 'pioro/dxtoolkit:2.4.10'
+                                args '-u root -w /dxtoolkit -v ${PWD}:/config'
+                                reuseNode true
+                        }
+                    }
+                    steps {
+                        sh "/dxtoolkit/dx_ctl_js_container -action restore -timestamp syntetic  -container_name $DLPX_CONTAINER -template_name $DLPX_TEMPLATE"
+                    }
+                }
+            }
+        }
+
+
+        stage('Install utPLSQL') {
+            steps {
+                sh """
+                export ORAENV_ASK=NO
+                export ORACLE_SID=pipedb
+                . oraenv
+                cd /home/oracle/utPLSQL/source/
+                sqlplus / as sysdba @uninstall_all.sql UT3
+                sqlplus / as sysdba @install_headless.sql
+                """
+            }
+        }
+        stage('Deploy PLSQL') {
+            steps {
+                sh """
+                export ORAENV_ASK=NO
+                export ORACLE_SID=pipedb
+                . oraenv
+                cd $WORKSPACE
+                sqlplus demo/demo @DEMO_BILL.pls
+                sqlplus demo/demo @DEMO_BILL.plb
+                sqlplus demo/demo @TEST_BILLING.pls
+                sqlplus demo/demo @TEST_BILLING.plb
+
+                """
+            }
+        }
+
+        stage('Before test - savepoint') {          
+            agent {
+                docker {
+                        image 'pioro/dxtoolkit:2.4.10'
+                        args '-u root -w /dxtoolkit -v ${PWD}:/config'
+                        reuseNode true
+                }
+            }
+            steps {
+                sh """
+                /dxtoolkit/dx_ctl_js_bookmarks -action create -bookmark_time latest -bookmark_name "before-${JOB_NAME}-${BUILD_NUMBER}"  -container_name $DLPX_CONTAINER -template_name $DLPX_TEMPLATE
+                /dxtoolkit/dx_ctl_js_bookmarks -bookmark_name "before-${JOB_NAME}-${BUILD_NUMBER}" -action share
+                """
+            }
+        }
+
+        stage('Run tests') {
+            steps {
+                sh """        
+                /home/oracle/utPLSQL-cli/bin/utplsql run demo/demo@127.0.0.1/pipedb
+                """
+            }
+        }
+
+        stage('After test - savepoint') {          
+            agent {
+                docker {
+                        image 'pioro/dxtoolkit:2.4.10'
+                        args '-u root -w /dxtoolkit -v ${PWD}:/config'
+                        reuseNode true
+                }
+            }
+            steps {
+                sh """
+                /dxtoolkit/dx_ctl_js_bookmarks -action create -bookmark_time latest -bookmark_name "after-${JOB_NAME}-${BUILD_NUMBER}"  -container_name $DLPX_CONTAINER -template_name $DLPX_TEMPLATE
+                /dxtoolkit/dx_ctl_js_bookmarks -bookmark_name "after-${JOB_NAME}-${BUILD_NUMBER}" -action share
+                """
+            }
+        }
+
+    }
+}
