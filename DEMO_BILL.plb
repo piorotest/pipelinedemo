@@ -13,6 +13,8 @@ CREATE OR REPLACE PACKAGE BODY DEMO_BILL AS
         else
             o_processed := 0;
         end if;
+
+        dbms_output.put_line('ala');
             
   END de_bill_one;
 
