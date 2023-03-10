@@ -1,10 +1,5 @@
 CREATE OR REPLACE PACKAGE BODY DEMO_BILL AS
 
--- poug test
--- demo test
--- demo1233 test
--- demo666
-
   procedure de_bill_one(account in number, o_processed out number) AS
     l_processed char;
   BEGIN
